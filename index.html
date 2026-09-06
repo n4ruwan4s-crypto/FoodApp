@@ -208,9 +208,27 @@
 (function(){
   "use strict";
 
-  firebase.initializeApp(firebaseConfig);
-  var db = firebase.firestore();
-  if (window.emailjs && EMAILJS_PUBLIC_KEY.indexOf("YOUR_") !== 0) {
+  function isPlaceholder(v){ return typeof v !== "string" || v.indexOf("YOUR_") === 0; }
+
+  var db = null;
+  try{
+    if(typeof firebaseConfig === "undefined" || Object.keys(firebaseConfig).some(function(k){ return isPlaceholder(firebaseConfig[k]); })){
+      document.getElementById("connNote").hidden = false;
+      document.getElementById("connNote").textContent = "This page isn't fully set up yet (config.js still has placeholder values) — please check back soon.";
+    } else if(typeof firebase === "undefined"){
+      document.getElementById("connNote").hidden = false;
+      document.getElementById("connNote").textContent = "Couldn't load required scripts — check your internet connection and reload.";
+    } else {
+      firebase.initializeApp(firebaseConfig);
+      db = firebase.firestore();
+    }
+  }catch(e){
+    console.error(e);
+    document.getElementById("connNote").hidden = false;
+    document.getElementById("connNote").textContent = "Something's misconfigured on this page — please check back soon.";
+  }
+
+  if (db && window.emailjs && !isPlaceholder(EMAILJS_PUBLIC_KEY)) {
     emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
   }
 
@@ -259,9 +277,11 @@
       if(!snap.exists){ return ref.set(data); }
     });
   }
-  ensureDoc(db.collection("menu").doc("rice"), {items: DEFAULT_RICE});
-  ensureDoc(db.collection("menu").doc("curries"), {items: DEFAULT_CURRIES});
-  ensureDoc(db.collection("settings").doc("main"), DEFAULT_SETTINGS);
+  if(db){
+    ensureDoc(db.collection("menu").doc("rice"), {items: DEFAULT_RICE});
+    ensureDoc(db.collection("menu").doc("curries"), {items: DEFAULT_CURRIES});
+    ensureDoc(db.collection("settings").doc("main"), DEFAULT_SETTINGS);
+  }
 
   /* ---------- Live listeners ---------- */
   var gotRice = false, gotCurries = false, gotSettings = false;
@@ -273,25 +293,37 @@
     }
   }
 
-  db.collection("menu").doc("rice").onSnapshot(function(snap){
-    state.rice = (snap.exists && snap.data().items) ? snap.data().items : DEFAULT_RICE;
-    gotRice = true;
-    if(state.ready) renderRice();
-    markReady();
-  }, function(err){ els.connNote.hidden = false; console.error(err); });
+  function showConnError(err){
+    els.connNote.hidden = false;
+    if(err && err.code === "permission-denied"){
+      els.connNote.textContent = "Can't load the menu — Firestore permission denied. The kitchen needs to check its security rules.";
+    } else {
+      els.connNote.textContent = "Can't reach the kitchen's menu right now — check your connection and reload.";
+    }
+    console.error(err);
+  }
 
-  db.collection("menu").doc("curries").onSnapshot(function(snap){
-    state.curries = (snap.exists && snap.data().items) ? snap.data().items : DEFAULT_CURRIES;
-    gotCurries = true;
-    if(state.ready) renderCurries();
-    markReady();
-  }, function(err){ els.connNote.hidden = false; console.error(err); });
+  if(db){
+    db.collection("menu").doc("rice").onSnapshot(function(snap){
+      state.rice = (snap.exists && snap.data().items) ? snap.data().items : DEFAULT_RICE;
+      gotRice = true;
+      if(state.ready) renderRice();
+      markReady();
+    }, showConnError);
 
-  db.collection("settings").doc("main").onSnapshot(function(snap){
-    state.settings = snap.exists ? Object.assign({}, DEFAULT_SETTINGS, snap.data()) : DEFAULT_SETTINGS;
-    gotSettings = true;
-    markReady();
-  }, function(err){ els.connNote.hidden = false; console.error(err); });
+    db.collection("menu").doc("curries").onSnapshot(function(snap){
+      state.curries = (snap.exists && snap.data().items) ? snap.data().items : DEFAULT_CURRIES;
+      gotCurries = true;
+      if(state.ready) renderCurries();
+      markReady();
+    }, showConnError);
+
+    db.collection("settings").doc("main").onSnapshot(function(snap){
+      state.settings = snap.exists ? Object.assign({}, DEFAULT_SETTINGS, snap.data()) : DEFAULT_SETTINGS;
+      gotSettings = true;
+      markReady();
+    }, showConnError);
+  }
 
   /* ---------- Countdown & window state ---------- */
   var tickTimer = null;
