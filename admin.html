@@ -27,6 +27,7 @@
   .login-card button{width:100%; padding:13px; font-size:15.5px; font-weight:600; font-family:inherit; background:var(--paprika); color:#fff; border:none; border-radius:10px; cursor:pointer;}
   .login-card button:hover{background:var(--paprika-deep);}
   .login-error{color:var(--paprika-deep); font-size:13px; margin:-4px 0 12px; display:none;}
+  .init-error{background:#F7E4DE; border:1px solid #E9C9BE; color:var(--paprika-deep); font-size:12.5px; line-height:1.5; padding:12px 14px; border-radius:10px; margin-bottom:16px;}
 
   header.topbar{background:linear-gradient(180deg, var(--paprika) 0%, var(--paprika-deep) 100%); color:#fff; padding:22px 18px; border-bottom:4px solid var(--turmeric);}
   .topbar-inner{max-width:940px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;}
@@ -95,6 +96,7 @@
   <div class="login-card">
     <h1>Kussiya Kitchen</h1>
     <p>Enter the admin password to manage the menu and orders.</p>
+    <div class="init-error" id="initError" hidden></div>
     <input type="password" id="pwInput" placeholder="Admin password" autocomplete="current-password">
     <p class="login-error" id="pwError">That password isn't right — try again.</p>
     <button id="loginBtn" type="button">Log in</button>
@@ -197,8 +199,33 @@
 (function(){
   "use strict";
 
-  firebase.initializeApp(firebaseConfig);
-  var db = firebase.firestore();
+  function showInitError(msg){
+    var el = document.getElementById("initError");
+    el.textContent = msg;
+    el.hidden = false;
+  }
+  function isPlaceholder(v){ return typeof v !== "string" || v.indexOf("YOUR_") === 0; }
+  function withTimeout(promise, ms){
+    return Promise.race([
+      promise,
+      new Promise(function(_, reject){ setTimeout(function(){ reject(new Error("timeout")); }, ms); })
+    ]);
+  }
+
+  var db = null;
+  try{
+    if(typeof firebaseConfig === "undefined" || Object.keys(firebaseConfig).some(function(k){ return isPlaceholder(firebaseConfig[k]); })){
+      showInitError("config.js still has placeholder Firebase values (something starting with \"YOUR_\"). Open config.js on GitHub, paste in your real Firebase project settings, then reload this page.");
+    } else if(typeof firebase === "undefined"){
+      showInitError("The Firebase library didn't load — check your internet connection, or that nothing (like an ad blocker) is blocking gstatic.com, then reload.");
+    } else {
+      firebase.initializeApp(firebaseConfig);
+      db = firebase.firestore();
+    }
+  }catch(e){
+    console.error(e);
+    showInitError("Couldn't start Firebase: " + e.message + ". Double check config.js has valid values (no missing quotes or commas), then reload.");
+  }
 
   var DEFAULT_RICE = [
     {id:"r-white", name:"White rice", hex:"#FFFDF6", price:90, active:true},
@@ -222,9 +249,11 @@
   function uid(prefix){ return prefix + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 
   function ensureDoc(ref, data){ return ref.get().then(function(snap){ if(!snap.exists) return ref.set(data); }); }
-  ensureDoc(db.collection("menu").doc("rice"), {items: DEFAULT_RICE});
-  ensureDoc(db.collection("menu").doc("curries"), {items: DEFAULT_CURRIES});
-  ensureDoc(db.collection("settings").doc("main"), DEFAULT_SETTINGS);
+  if(db){
+    ensureDoc(db.collection("menu").doc("rice"), {items: DEFAULT_RICE});
+    ensureDoc(db.collection("menu").doc("curries"), {items: DEFAULT_CURRIES});
+    ensureDoc(db.collection("settings").doc("main"), DEFAULT_SETTINGS);
+  }
 
   var localState = { rice: DEFAULT_RICE, curries: DEFAULT_CURRIES, settings: DEFAULT_SETTINGS, orders: [] };
 
@@ -233,7 +262,16 @@
   var connPill = document.getElementById("connPill");
 
   function tryLogin(){
-    db.collection("settings").doc("main").get().then(function(snap){
+    document.getElementById("initError").hidden = true;
+    document.getElementById("pwError").style.display = "none";
+    if(!db){
+      showInitError("Firebase isn't set up correctly yet, so login can't be checked — see the message above, fix config.js, and reload.");
+      return;
+    }
+    var btn = document.getElementById("loginBtn");
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    withTimeout(db.collection("settings").doc("main").get(), 10000).then(function(snap){
       var settings = snap.exists ? Object.assign({}, DEFAULT_SETTINGS, snap.data()) : DEFAULT_SETTINGS;
       var val = document.getElementById("pwInput").value;
       if(val === settings.adminPassword){
@@ -244,7 +282,16 @@
       }
     }).catch(function(err){
       console.error(err);
-      alert("Couldn't reach the kitchen's database — check your connection and try again.");
+      if(err && err.code === "permission-denied"){
+        showInitError("Firestore says permission denied. Go to Firebase Console \u2192 Firestore \u2192 Rules and make sure you published the rules exactly as given (allow read/write: if true), then reload.");
+      } else if(err && err.message === "timeout"){
+        showInitError("Couldn't reach Firebase within 10 seconds. Check your internet connection, and that the projectId in config.js exactly matches your Firebase project, then reload.");
+      } else {
+        showInitError("Couldn't reach the kitchen's database (" + (err && err.message ? err.message : "unknown error") + "). Check config.js and your connection, then reload.");
+      }
+    }).finally(function(){
+      btn.disabled = false;
+      btn.textContent = "Log in";
     });
   }
   document.getElementById("loginBtn").addEventListener("click", tryLogin);
